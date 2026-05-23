@@ -1,0 +1,16 @@
+# 環境變數與金鑰 (絕對不能上傳！)
+.env
+
+# Python 虛擬環境
+venv/
+env/
+
+# Python 快取檔案
+__pycache__/
+*.pyc
+
+# 本地資料庫 (避免上傳測試資料或讓檔案太大)
+data/*.db
+
+# Mac 系統產生的垃圾檔 (如果你是用 Mac 的話)
+.DS_Store
