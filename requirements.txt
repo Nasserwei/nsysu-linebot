@@ -1,28 +1,41 @@
-# Web Framework
-fastapi==0.111.0
-uvicorn[standard]==0.30.1
+# ============================================================
+# requirements.txt
+#
+# 根本原因：Python 3.14 沒有 pydantic-core 的預編 wheel，
+#           pip 嘗試從原始碼編譯，需要 Rust/Cargo，
+#           但 Render 的 /usr/local/cargo 掛載為唯讀 → 錯誤。
+#
+# 解決方案：
+#   1. 固定 Python 3.11（在 Render Dashboard 或 render.yaml 設定）
+#   2. 所有套件使用 Python 3.11 已有預編 wheel 的版本
+#   3. requests 不鎖上限，讓 pip 自動解析 line-bot-sdk 的相依
+# ============================================================
 
-# LINE Bot SDK
-line-bot-sdk==3.11.0
+# Web Framework
+fastapi==0.115.14
+uvicorn[standard]==0.34.3
+
+# LINE Bot SDK (需要 requests>=2.31，不鎖上限讓 pip 自動解析)
+line-bot-sdk==3.14.5
+requests>=2.31.0
 
 # Web Scraping
-requests==2.32.3
 beautifulsoup4==4.12.3
-lxml==5.2.2
+lxml==5.1.0
 
 # NLP / 文字相似度
-scikit-learn==1.5.0
+scikit-learn==1.5.2
 jieba==0.42.1
 numpy==1.26.4
 
 # Database
-sqlalchemy==2.0.30
+sqlalchemy==2.0.36
 
 # Scheduler
 apscheduler==3.10.4
 
 # Env & Utils
 python-dotenv==1.0.1
-httpx==0.27.0
-pydantic==2.7.1
-pydantic-settings==2.3.0
+httpx==0.27.2
+pydantic==2.9.2
+pydantic-settings==2.5.2
