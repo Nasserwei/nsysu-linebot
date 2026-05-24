@@ -1,18 +1,15 @@
-# render.yaml — Render 部署設定檔
-# 放在專案根目錄，Render 會自動讀取
-
 services:
   - type: web
     name: nsysu-mis-linebot
     runtime: python
-    # 固定 Python 3.11，避免 3.14 的 pydantic-core Rust 編譯問題
     pythonVersion: "3.11.9"
     buildCommand: "pip install -r requirements.txt"
     startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
-    # Render 免費方案記憶體 512MB，uvicorn 單 worker 即可
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
       - key: LINE_CHANNEL_SECRET
-        sync: false          # 在 Render Dashboard 手動填入，不寫在此檔
+        sync: false
       - key: LINE_CHANNEL_ACCESS_TOKEN
         sync: false
       - key: DATABASE_URL
@@ -23,5 +20,3 @@ services:
         value: "true"
       - key: NLP_SIMILARITY_THRESHOLD
         value: "0.15"
-      - key: PYTHON_UNBUFFERED
-        value: "1"
