@@ -1,11 +1,6 @@
 """
 line_handler.py — LINE Webhook 事件路由與處理
-
-處理的事件類型：
-  - FollowEvent    : 用戶加入（存入 DB + 歡迎訊息）
-  - UnfollowEvent  : 用戶封鎖（標記 DB）
-  - MessageEvent   : 文字訊息（NLP Q&A）
-  - PostbackEvent  : 互動按鈕回傳（選課 / GPA Postback）
+完全使用關鍵字比對，不依賴 NLP，確保穩定回覆。
 """
 from __future__ import annotations
 
@@ -31,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import (
+    Announcement,
     deactivate_user,
     get_active_user_ids,
     get_unpushed_announcements,
@@ -49,10 +45,8 @@ from app.messages import (
     build_weather_flex,
     build_welcome_message,
 )
-from app.nlp import get_answer
 
 logger = logging.getLogger(__name__)
-
 _configuration = Configuration(access_token=settings.line_channel_access_token)
 
 
@@ -99,9 +93,7 @@ def handle_postback(event: PostbackEvent, db: Session) -> None:
         course_type = params.get("type", "required")
         flex_msg = build_course_detail_flex(course_type)
         api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[flex_msg]))
-
     elif action == "gpa_calc":
-        # 引導用戶輸入成績
         guide = (
             "📊 GPA 計算機使用方式：\n\n"
             "請依照以下格式輸入成績：\n"
@@ -146,79 +138,208 @@ def broadcast_new_announcements(db: Session) -> int:
                 from linebot.v3.messaging import MulticastRequest
                 api.multicast(MulticastRequest(to=chunk, messages=[flex_msg]))
             except Exception as exc:
-                logger.error("廣播失敗（公告 id=%d）：%s", ann.id, exc)
-                continue
+                logger.error("廣播失敗：%s", exc)
         mark_announcement_pushed(db, ann.id)
         pushed_count += 1
     return pushed_count
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 關鍵字路由表
+# 關鍵字對應回覆內容（純文字，不依賴 NLP）
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-_KEYWORD_ROUTES: dict[str, str] = {
-    "選課資訊": "_handle_course_menu",
-    "選課": "_handle_course_menu",
-    "課程": "_handle_course_menu",
-    "最新公告": "_handle_latest_announcements",
-    "公告": "_handle_latest_announcements",
-    "系所公告": "_handle_latest_announcements",
-    "天氣": "_handle_weather",
-    "氣溫": "_handle_weather",
-    "下雨": "_handle_weather",
-    "gpa": "_handle_gpa",
-    "GPA": "_handle_gpa",
-    "成績計算": "_handle_gpa",
-    "學校首頁": "_handle_school_links",
-    "常用連結": "_handle_school_links",
-    "連結": "_handle_school_links",
-    "官網": "_handle_school_links",
-    "說明": "_handle_help",
-    "幫助": "_handle_help",
-    "help": "_handle_help",
-    "選單": "_handle_help",
-    "你好": "_handle_greeting",
-    "hi": "_handle_greeting",
-    "hello": "_handle_greeting",
-    "嗨": "_handle_greeting",
+_ANSWERS = {
+    "monkey": (
+        "🐒 中山大學校園確實有台灣獼猴出沒！\n\n"
+        "【安全守則】\n"
+        "① 不要直視猴子眼睛（視為挑釁）\n"
+        "② 切勿餵食！會增加攻擊性\n"
+        "③ 背包、食物請拿好不要外露\n"
+        "④ 被靠近時保持冷靜、緩慢後退，勿奔跑\n"
+        "⑤ 遇到帶幼猴的母猴更要保持距離\n\n"
+        "【生態小知識】\n"
+        "🌿 台灣獼猴是台灣特有種，全台唯一野生靈長類\n"
+        "📍 常出沒於西子灣步道、圖書館後山\n\n"
+        "⚠️ 發生攻擊事件請聯繫校安中心：(07)525-2000"
+    ),
+    "bbq": (
+        "🔥 中山大學周邊燒肉／BBQ 推薦：\n\n"
+        "① 🥩 牛角日式燒肉（夢時代店）\n"
+        "   和牛等級多樣，人均 $500–$900\n\n"
+        "② 🍖 燒肉眾 精緻炭火燒肉（鼓山店）\n"
+        "   炭火現烤，人均 $400–$700\n\n"
+        "③ 🌟 八色韓式烤肉（左營店）\n"
+        "   八種口味豬五花，人均 $350–$600\n\n"
+        "🚌 從中山大學搭公車至哈瑪星站轉乘約15–30分鐘"
+    ),
+    "spicy": (
+        "🌶️ 麻辣控看過來！周邊麻辣特選：\n\n"
+        "① 鬍鬚張麻辣鴨血豆腐\n"
+        "   麻辣湯底濃郁，鴨血豆腐必點\n\n"
+        "② 辣一鍋\n"
+        "   麻辣湯底層次豐富，可選辣度\n\n"
+        "③ 川老爺麻辣火鍋\n"
+        "   老成都風味，牛油鍋底超香\n\n"
+        "💡 高雄飲食偏甜，要真辣記得告知店員！"
+    ),
+    "food": (
+        "🍽️ 中山大學周邊美食推薦：\n\n"
+        "【早餐】哈瑪星早餐店、美濃粄條\n"
+        "【午晚餐】鼓山魚市場海鮮小炒、校內學生食堂\n"
+        "【飲料】迷客夏、清心（校門口3分鐘）\n"
+        "【宵夜】關東煮攤車（晚上7點後側門附近）\n\n"
+        "【週末必去】\n"
+        "🐟 旗津老街海鮮 ── 渡輪10分鐘，烤小卷必吃！\n"
+        "🎪 哈瑪星文創市集（不定期）"
+    ),
+    "github": (
+        "💻 GitHub Copilot 學生免費申請：\n\n"
+        "【申請步驟】\n"
+        "1️⃣ 準備中山大學 edu.tw 信箱\n"
+        "   （學號@student.nsysu.edu.tw）\n"
+        "2️⃣ 前往 github.com/education/students\n"
+        "3️⃣ 點擊「Join GitHub Education」\n"
+        "4️⃣ 選「School email address」驗證\n"
+        "5️⃣ 上傳學生證或選課截圖\n"
+        "6️⃣ 等待審核（1–5個工作天）\n\n"
+        "✅ 通過後獲得：\n"
+        "• GitHub Copilot 免費\n"
+        "• JetBrains 全家桶\n"
+        "• Azure 學生額度 $100\n"
+        "• Canva Pro 等數十種福利"
+    ),
+    "chatgpt": (
+        "🤖 ChatGPT 學生方案資訊：\n\n"
+        "OpenAI 目前無官方學生折扣，Plus 每月 $20 美元。\n\n"
+        "【省錢替代方案】\n"
+        "✅ ChatGPT 免費版（GPT-4o mini）日常夠用\n"
+        "✅ Microsoft Copilot（學校 Office 365 免費）\n"
+        "✅ Google Gemini（有學生方案）\n"
+        "✅ Notion AI（學生方案免費）\n\n"
+        "💡 先用 GitHub Education 工具組合\n"
+        "通常就能滿足大部分學習需求！"
+    ),
+    "gemini": (
+        "🌟 Google Gemini 學生方案：\n\n"
+        "【Gemini for Education】\n"
+        "學校 Google Workspace 帳號可免費使用\n"
+        "Gemini in Google Docs/Gmail 等工具\n\n"
+        "【免費工具推薦】\n"
+        "✅ Google Colab ── 免費 GPU/TPU，AI作業必備\n"
+        "✅ Google Cloud for Students ── 有免費額度\n"
+        "✅ Gemini API ── 有免費使用額度\n\n"
+        "📌 資管系推薦：Google Colab + Gemini API\n"
+        "做機器學習作業超方便！"
+    ),
+    "student_benefit": (
+        "🎓 學生數位福利大全：\n\n"
+        "【完全免費】\n"
+        "✅ GitHub Copilot + Pro（申請 GitHub Education）\n"
+        "✅ JetBrains 全家桶（PyCharm, IntelliJ...）\n"
+        "✅ Microsoft Azure（$100 美元額度）\n"
+        "✅ Figma Education\n"
+        "✅ Canva for Education\n\n"
+        "【學校授權】\n"
+        "🔧 Microsoft Office 365\n"
+        "🔧 MATLAB、SPSS 等學術軟體\n\n"
+        "【優惠折扣】\n"
+        "💰 Notion Plus 免費\n"
+        "💰 Spotify、Apple Music 半價\n"
+        "💰 YouTube Premium 折扣"
+    ),
+    "lecture": (
+        "🎤 中山大學講座與活動資訊：\n\n"
+        "【查詢管道】\n"
+        "① 資管系官網：mis.nsysu.edu.tw/news\n"
+        "② 中山大學學務處：osa.nsysu.edu.tw\n"
+        "③ 關注「中山大學」LINE 官方帳號\n\n"
+        "【常見講座類型】\n"
+        "🖥️ 產業趨勢（AI、資安、雲端）\n"
+        "📊 資料科學與機器學習工作坊\n"
+        "🚀 新創創業講座\n"
+        "🔐 資安 CTF 競賽培訓\n\n"
+        "💡 加入系學會 LINE 群第一時間收通知！"
+    ),
+    "kaohsiung": (
+        "🌆 高雄旅遊推薦：\n\n"
+        "【從中山大學出發（近）】\n"
+        "⛵ 旗津老街 ── 渡輪10分鐘，烤小卷必吃\n"
+        "🌊 西子灣夕陽 ── 學校就有！全台最美夕陽\n"
+        "🏯 打狗英國領事館 ── 步行可達\n\n"
+        "【捷運可達】\n"
+        "🚇 六合夜市 ── 美麗島站\n"
+        "🎨 駁二藝術特區 ── 假日市集\n"
+        "🌈 美麗島站 ── 全球最美捷運站\n\n"
+        "【週末一日遊】\n"
+        "🌺 壽山生態步道\n"
+        "🎢 夢時代購物中心\n\n"
+        "🚇 辦高雄捷運月票（學生優惠）或用 YouBike！"
+    ),
+    "club": (
+        "🎉 中山大學社團推薦：\n\n"
+        "【技術相關】\n"
+        "💻 程式設計研究社 ── ICPC競賽\n"
+        "🔐 資安研究社 ── CTF競賽\n"
+        "📊 大數據研究社 ── ML實作\n"
+        "🤖 AI 研究社\n\n"
+        "【生活興趣】\n"
+        "🎸 熱音社、吉他社\n"
+        "🏀 籃球、羽球、游泳校隊\n"
+        "📸 攝影社 ── 拍西子灣夕陽！\n\n"
+        "【一定要加】\n"
+        "🎓 資管系系學會 ── 迎新、烤肉、系際杯\n\n"
+        "💡 大一先參加迎新博覽會再決定！"
+    ),
+    "dorm": (
+        "🏠 中山大學宿舍資訊：\n\n"
+        "【申請方式】\n"
+        "新生放榜後由學校統一分配\n"
+        "🔗 宿舍組：housing-osa.nsysu.edu.tw\n\n"
+        "【費用（參考）】\n"
+        "• 4人房：約 $5,000–$8,000 / 學期\n"
+        "• 2人房：約 $8,000–$12,000 / 學期\n\n"
+        "【門禁】🕚 23:00–06:00\n\n"
+        "【設施】\n"
+        "✅ 每棟 Wi-Fi\n"
+        "✅ 洗衣機（投幣式）\n"
+        "✅ 自修室、交誼廳\n\n"
+        "❓ 聯繫宿舍組：(07)525-2000 分機 2400"
+    ),
+    "calculus": (
+        "📐 微積分求生指南：\n\n"
+        "【學習資源】\n"
+        "📺 YouTube：\n"
+        "• 數學老師沒告訴你的事（繁中）\n"
+        "• 3Blue1Brown「Essence of Calculus」\n"
+        "• Khan Academy 微積分系列（免費）\n\n"
+        "【實戰建議】\n"
+        "① 每週跟上進度，不要積欠！\n"
+        "② 找學長姐借歷年考古題\n"
+        "③ 考前一週密集刷題\n"
+        "④ 善用 TA 輔導時間（免費！）\n\n"
+        "💡 統計學、線性代數、ML 都用到微積分\n"
+        "現在打好基礎很值得！"
+    ),
 }
 
-_KEYWORD_EXPAND: dict[str, str] = {
-    "猴子": "遇到猴子怎麼辦",
-    "獼猴": "遇到獼猴怎麼辦",
-    "猴": "遇到猴子怎麼辦",
-    "燒肉": "附近哪裡有燒肉",
-    "烤肉": "附近哪裡有燒肉",
-    "bbq": "BBQ 吃到飽推薦",
-    "燒烤": "附近哪裡有燒肉",
-    "麻辣": "麻辣火鍋推薦",
-    "辣": "麻辣火鍋推薦",
-    "火鍋": "麻辣火鍋推薦",
-    "github": "如何申請 GitHub Copilot",
-    "copilot": "如何申請 GitHub Copilot",
-    "chatgpt": "ChatGPT 學生方案",
-    "gemini": "Gemini 學生方案",
-    "學生優惠": "學生軟體優惠有哪些",
-    "edu信箱": "edu 信箱有什麼用",
-    "講座": "有什麼講座",
-    "活動": "最近有什麼活動",
-    "高雄": "高雄好玩的地方",
-    "旅遊": "高雄旅遊景點推薦",
-    "景點": "高雄好玩的地方",
-    "社團": "社團推薦",
-    "宿舍": "宿舍怎麼申請",
-    "住宿": "宿舍怎麼申請",
-    "門禁": "宿舍門禁幾點",
-    "微積分": "微積分好難怎麼念",
-    "calculus": "微積分好難怎麼念",
-    "數學": "微積分好難怎麼念",
-    "美食": "附近吃什麼推薦",
-    "吃什麼": "附近吃什麼推薦",
-    "餐廳": "推薦餐廳",
-}
+# 關鍵字 → 答案 key 對照表
+_KEYWORD_MAP: list[tuple[list[str], str]] = [
+    (["猴子", "獼猴", "猴"], "monkey"),
+    (["燒肉", "烤肉", "bbq", "燒烤"], "bbq"),
+    (["麻辣", "辣", "火鍋", "麻辣鍋"], "spicy"),
+    (["美食", "吃什麼", "餐廳", "吃飯", "美食推薦"], "food"),
+    (["github", "copilot", "github education"], "github"),
+    (["chatgpt", "openai", "chat gpt"], "chatgpt"),
+    (["gemini", "google ai"], "gemini"),
+    (["學生優惠", "edu信箱", "學生福利", "免費軟體", "學生軟體"], "student_benefit"),
+    (["講座", "活動", "演講", "工作坊", "hackathon"], "lecture"),
+    (["高雄", "景點", "旅遊", "夜市", "旗津", "西子灣"], "kaohsiung"),
+    (["社團", "加社團", "課外活動"], "club"),
+    (["宿舍", "住宿", "門禁", "宿舍費"], "dorm"),
+    (["微積分", "calculus", "大一數學", "數學好難"], "calculus"),
+]
 
-# GPA 成績輸入格式：「GPA 科目 學分 分數」
+# GPA 格式
 _GPA_LINE_RE = re.compile(
     r"^gpa\s+(.+?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$",
     re.IGNORECASE,
@@ -231,41 +352,53 @@ _GPA_LINE_RE = re.compile(
 
 def _route_text(text: str, user_id: str, db: Session) -> list:
     lower = text.lower().strip()
-    clean = lower.strip("?？!！。，、～~! ")
 
-    # 0. GPA 多行成績輸入偵測（優先判斷）
+    # 0. GPA 計算
     lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
     if lines and _GPA_LINE_RE.match(lines[0]):
         return _handle_gpa_calculate(lines)
 
-    # 1. 精確關鍵字路由（包含比對）
-    for keyword, handler_name in _KEYWORD_ROUTES.items():
-        if keyword.lower() in lower:
-            handler = globals().get(handler_name)
-            if handler:
-                return handler(db=db)
+    # 1. 功能型關鍵字路由
+    if any(k in lower for k in ["選課", "課程", "必修", "選修", "通識"]):
+        return [build_course_carousel()]
+    if any(k in lower for k in ["公告", "最新公告", "系所公告"]):
+        return _handle_latest_announcements(db=db)
+    if any(k in lower for k in ["天氣", "氣溫", "下雨", "會不會下雨"]):
+        return _handle_weather()
+    if any(k in lower for k in ["gpa", "成績計算"]):
+        return [build_gpa_flex()]
+    if any(k in lower for k in ["連結", "官網", "學校首頁", "常用連結"]):
+        return [build_school_links_flex()]
+    if any(k in lower for k in ["你好", "hi", "hello", "嗨", "哈囉"]):
+        return _handle_greeting()
+    if any(k in lower for k in ["說明", "幫助", "help", "選單", "功能"]):
+        return _handle_help()
 
-    # 2. 短詞展開（包含比對，只要訊息中出現關鍵字就展開）
-    expanded_text = text
-    for keyword, full_question in _KEYWORD_EXPAND.items():
-        if keyword in clean:
-            expanded_text = full_question
-            break
+    # 2. 知識庫關鍵字比對（純關鍵字，不用 NLP）
+    for keywords, answer_key in _KEYWORD_MAP:
+        if any(k in lower for k in keywords):
+            answer = _ANSWERS[answer_key]
+            save_qa_feedback(db=db, line_user_id=user_id, user_question=text,
+                             matched_question=answer_key, answer=answer, similarity_score=1.0)
+            return [TextMessage(text=answer, quick_reply=build_quick_reply_menu())]
 
-    # 3. NLP Q&A
-    return _handle_nlp(text=expanded_text, user_id=user_id, db=db)
+    # 3. Fallback
+    fallback = (
+        "🤔 抱歉，我還不太確定你在問什麼～\n\n"
+        "你可以試試輸入以下關鍵字：\n"
+        "🐒 猴子  🍖 燒肉  🌶️ 麻辣\n"
+        "💻 GitHub  🎤 講座  🌆 高雄\n"
+        "🏠 宿舍  📐 微積分  🌤️ 天氣\n"
+        "📊 GPA  🔗 連結  📚 選課資訊"
+    )
+    return [TextMessage(text=fallback, quick_reply=build_quick_reply_menu())]
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 功能處理器
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def _handle_course_menu(db: Session = None, **_) -> list:
-    return [build_course_carousel()]
-
-
 def _handle_latest_announcements(db: Session, **_) -> list:
-    from app.database import Announcement
     announcements = (
         db.query(Announcement)
         .order_by(Announcement.created_at.desc())
@@ -274,15 +407,14 @@ def _handle_latest_announcements(db: Session, **_) -> list:
     )
     if not announcements:
         return [TextMessage(
-            text="目前資料庫尚無公告記錄。\n請稍後再試，或前往系網查看：\nhttps://mis.nsysu.edu.tw/news",
+            text="目前資料庫尚無公告記錄。\n請前往系網查看：\nhttps://mis.nsysu.edu.tw/news",
             quick_reply=build_quick_reply_menu(),
         )]
     ann_dicts = [{"title": a.title, "url": a.url, "published_at": a.published_at} for a in announcements]
     return [build_multi_announcement_flex(ann_dicts)]
 
 
-def _handle_weather(db: Session = None, **_) -> list:
-    """抓取高雄即時天氣（中央氣象署開放 API，無需 key）。"""
+def _handle_weather() -> list:
     try:
         url = (
             "https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0003-001"
@@ -296,19 +428,16 @@ def _handle_weather(db: Session = None, **_) -> list:
         if records:
             st = records[0]
             we = st["WeatherElement"]
-            name    = st["StationName"]
-            weather = we.get("Weather", "—")
-            temp    = we.get("AirTemperature", "—")
-            humid   = we.get("RelativeHumidity", "—")
-            wind    = we.get("WindSpeed", "—")
             return [build_weather_flex(
-                station=name, weather=weather,
-                temp=temp, humid=humid, wind=wind,
+                station=st["StationName"],
+                weather=we.get("Weather", "—"),
+                temp=we.get("AirTemperature", "—"),
+                humid=we.get("RelativeHumidity", "—"),
+                wind=we.get("WindSpeed", "—"),
             )]
     except Exception as exc:
         logger.warning("天氣 API 失敗：%s", exc)
 
-    # fallback：改用氣象局觀測資料第二來源
     try:
         url2 = (
             "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001"
@@ -320,35 +449,22 @@ def _handle_weather(db: Session = None, **_) -> list:
         loc = data2["records"]["location"][0]
         elements = {e["elementName"]: e["time"][0]["parameter"]["parameterName"]
                     for e in loc["weatherElement"]}
-        weather = elements.get("Wx", "—")
-        rain    = elements.get("PoP", "—")
-        minT    = elements.get("MinT", "—")
-        maxT    = elements.get("MaxT", "—")
         return [build_weather_flex(
             station="高雄市",
-            weather=weather,
-            temp=f"{minT}～{maxT}",
-            humid=f"降雨機率 {rain}%",
+            weather=elements.get("Wx", "—"),
+            temp=f'{elements.get("MinT","—")}～{elements.get("MaxT","—")}',
+            humid=f'降雨機率 {elements.get("PoP","—")}%',
             wind="—",
         )]
     except Exception as exc2:
-        logger.warning("天氣 API fallback 失敗：%s", exc2)
+        logger.warning("天氣 fallback 失敗：%s", exc2)
         return [TextMessage(
-            text="🌤️ 目前無法取得天氣資訊，請直接查詢：\nhttps://www.cwb.gov.tw/V8/C/W/County/County.html?CID=66",
+            text="🌤️ 目前無法取得天氣資訊，請查詢：\nhttps://www.cwa.gov.tw",
             quick_reply=build_quick_reply_menu(),
         )]
 
 
-def _handle_gpa(db: Session = None, **_) -> list:
-    """回傳 GPA 計算機 Flex Message 說明卡。"""
-    return [build_gpa_flex()]
-
-
 def _handle_gpa_calculate(lines: list[str]) -> list:
-    """
-    解析多行 GPA 輸入並計算結果。
-    格式：GPA 科目名稱 學分 成績分數
-    """
     def score_to_grade(s: float) -> float:
         if s >= 90: return 4.3
         if s >= 85: return 4.0
@@ -359,92 +475,70 @@ def _handle_gpa_calculate(lines: list[str]) -> list:
         if s >= 60: return 1.0
         return 0.0
 
-    courses = []
-    errors = []
+    courses, errors = [], []
     for line in lines:
         m = _GPA_LINE_RE.match(line.strip())
         if m:
-            name   = m.group(1)
+            name = m.group(1)
             credit = float(m.group(2))
-            score  = float(m.group(3))
-            grade  = score_to_grade(score)
-            courses.append((name, credit, score, grade))
+            score = float(m.group(3))
+            courses.append((name, credit, score, score_to_grade(score)))
         else:
             errors.append(line)
 
     if not courses:
-        return [TextMessage(text="❌ 格式錯誤，請參考範例：\nGPA 微積分 3 85\nGPA 程式設計 3 92")]
+        return [TextMessage(text="❌ 格式錯誤，請參考：\nGPA 微積分 3 85\nGPA 程式設計 3 92")]
 
     total_credits = sum(c[1] for c in courses)
-    weighted_sum  = sum(c[1] * c[3] for c in courses)
-    gpa = weighted_sum / total_credits if total_credits > 0 else 0.0
+    gpa = sum(c[1] * c[3] for c in courses) / total_credits if total_credits else 0.0
 
-    lines_out = ["📊 GPA 計算結果\n"]
-    lines_out.append(f"{'科目':<10} {'學分':>4} {'分數':>5} {'績點':>5}")
-    lines_out.append("─" * 30)
+    out = ["📊 GPA 計算結果\n",
+           f"{'科目':<10} {'學分':>4} {'分數':>5} {'績點':>5}",
+           "─" * 30]
     for name, credit, score, grade in courses:
-        lines_out.append(f"{name:<10} {credit:>4.0f} {score:>5.1f} {grade:>5.1f}")
-    lines_out.append("─" * 30)
-    lines_out.append(f"總學分：{total_credits:.0f}")
-    lines_out.append(f"✨ GPA：{gpa:.2f}")
+        out.append(f"{name:<10} {credit:>4.0f} {score:>5.1f} {grade:>5.1f}")
+    out.extend(["─" * 30, f"總學分：{total_credits:.0f}", f"✨ GPA：{gpa:.2f}"])
 
-    if gpa >= 3.8:
-        lines_out.append("\n🏆 超優秀！書卷獎等你！")
-    elif gpa >= 3.0:
-        lines_out.append("\n👍 表現不錯，繼續保持！")
-    elif gpa >= 2.0:
-        lines_out.append("\n💪 還有進步空間，加油！")
-    else:
-        lines_out.append("\n😢 需要加把勁，善用 TA 和教授 Office Hour！")
+    if gpa >= 3.8: out.append("\n🏆 超優秀！書卷獎等你！")
+    elif gpa >= 3.0: out.append("\n👍 表現不錯，繼續保持！")
+    elif gpa >= 2.0: out.append("\n💪 還有進步空間，加油！")
+    else: out.append("\n😢 善用 TA 和教授 Office Hour！")
 
     if errors:
-        lines_out.append(f"\n⚠️ 以下行格式錯誤，已略過：\n" + "\n".join(errors))
+        out.append(f"\n⚠️ 以下行格式有誤：\n" + "\n".join(errors))
 
-    return [TextMessage(text="\n".join(lines_out), quick_reply=build_quick_reply_menu())]
-
-
-def _handle_school_links(db: Session = None, **_) -> list:
-    """回傳學校常用連結 Flex Message。"""
-    return [build_school_links_flex()]
+    return [TextMessage(text="\n".join(out), quick_reply=build_quick_reply_menu())]
 
 
-def _handle_help(db: Session = None, **_) -> list:
-    help_text = (
-        "🤖 中山資管新生小幫手 — 功能說明\n\n"
-        "你可以問我：\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "📚 選課相關 → 輸入「選課資訊」\n"
-        "📢 最新公告 → 輸入「最新公告」\n"
-        "🌤️ 高雄天氣 → 輸入「天氣」\n"
-        "📊 GPA計算 → 輸入「GPA」\n"
-        "🔗 常用連結 → 輸入「連結」\n"
-        "🐒 校園生態 → 輸入「猴子」\n"
-        "🍖 燒肉推薦 → 輸入「燒肉」\n"
-        "🌶️ 麻辣推薦 → 輸入「麻辣」\n"
-        "💻 數位優惠 → 輸入「GitHub」\n"
-        "🌆 高雄旅遊 → 輸入「高雄」\n"
-        "🏠 宿舍資訊 → 輸入「宿舍」\n"
-        "📐 微積分   → 輸入「微積分」\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "或直接輸入任何問題，我會盡力回答！"
-    )
-    return [TextMessage(text=help_text, quick_reply=build_quick_reply_menu())]
-
-
-def _handle_greeting(db: Session = None, **_) -> list:
+def _handle_greeting() -> list:
     return [TextMessage(
         text="嗨嗨！👋 我是中山資管新生小幫手～\n有什麼需要幫忙的嗎？\n\n點選下方選單快速查詢！",
         quick_reply=build_quick_reply_menu(),
     )]
 
 
-def _handle_nlp(text: str, user_id: str, db: Session) -> list:
-    answer, score = get_answer(text)
-    save_qa_feedback(db=db, line_user_id=user_id, user_question=text,
-                     matched_question=None, answer=answer, similarity_score=score)
-    if score > 0.0:
-        return [TextMessage(text=answer, quick_reply=build_quick_reply_menu())]
-    return [TextMessage(text=answer)]
+def _handle_help() -> list:
+    return [TextMessage(
+        text=(
+            "🤖 中山資管新生小幫手 — 功能說明\n\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "📚 選課資訊 → 輸入「選課」\n"
+            "📢 最新公告 → 輸入「公告」\n"
+            "🌤️ 高雄天氣 → 輸入「天氣」\n"
+            "📊 GPA計算  → 輸入「GPA」\n"
+            "🔗 常用連結 → 輸入「連結」\n"
+            "🐒 猴子守則 → 輸入「猴子」\n"
+            "🍖 燒肉推薦 → 輸入「燒肉」\n"
+            "🌶️ 麻辣推薦 → 輸入「麻辣」\n"
+            "💻 數位優惠 → 輸入「GitHub」\n"
+            "🌆 高雄旅遊 → 輸入「高雄」\n"
+            "🏠 宿舍資訊 → 輸入「宿舍」\n"
+            "📐 微積分   → 輸入「微積分」\n"
+            "🎉 社團推薦 → 輸入「社團」\n"
+            "━━━━━━━━━━━━━━━━━━━"
+        ),
+        quick_reply=build_quick_reply_menu(),
+    )]
 
 
 def _fetch_display_name(user_id: str) -> str | None:
