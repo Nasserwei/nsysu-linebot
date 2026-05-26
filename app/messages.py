@@ -72,7 +72,7 @@ def build_course_carousel() -> TemplateMessage:
     # 使用穩定可靠的圖片（1024x512 以上，HTTPS，無需登入）
     IMG_REQUIRED  = "https://images.unsplash.com/photo-1524178232363-1fb2b075b655?w=1024&q=80"  # 課堂/筆記
     IMG_ELECTIVE  = "https://images.unsplash.com/photo-1434030216411-0b793f4b4173?w=1024&q=80"  # 書本/選擇
-    IMG_GENERAL   = "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=1024&q=80"  # 校園/廣場
+    IMG_GENERAL   = "https://images.unsplash.com/photo-1580582932707-520aed937b7b?w=1024&q=80"  # 上課/教室
     IMG_DOUBLE    = "https://images.unsplash.com/photo-1543269664-56d93c1b41a6?w=1024&q=80"    # 雙路/岔路
 
     columns = [
@@ -579,13 +579,13 @@ def build_school_links_flex() -> FlexMessage:
     links = [
         ("🏫", "學校首頁",    "https://www.nsysu.edu.tw/"),
         ("📚", "選課系統",    "https://selcrs.nsysu.edu.tw/"),
-        ("🗂️", "校務資訊系統","https://portal.nsysu.edu.tw/"),
+        ("🗂️", "校務資訊系統","https://sso.nsysu.edu.tw/"),
         ("📋", "資管系官網",  "https://mis.nsysu.edu.tw/"),
         ("📖", "課程地圖",    "https://web.mis.nsysu.edu.tw/p/412-1232-455.php?Lang=zh-tw"),
         ("🌐", "通識課程",    "https://www3.nsysu.edu.tw/financial/map/ge.pdf"),
         ("🎯", "雙主修/輔系", "https://oaa.nsysu.edu.tw/p/412-1003-19384.php?Lang=zh-tw"),
-        ("🏠", "宿舍組",      "https://dorm.nsysu.edu.tw/"),
-        ("📚", "圖書館",      "https://lib.nsysu.edu.tw/"),
+        ("🏠", "宿舍組",      "https://housing-osa.nsysu.edu.tw/"),
+        ("📚", "圖書館",      "https://lis.nsysu.edu.tw/"),
     ]
 
     body_contents = []
