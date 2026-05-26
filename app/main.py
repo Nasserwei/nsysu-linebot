@@ -192,6 +192,28 @@ async def get_stats(db: Session = Depends(get_db)):
 async def reload_nlp():
     """重新載入 NLP 知識庫（無需重啟服務）。"""
     from app.nlp import nlp_engine
-
     nlp_engine.reload()
     return {"status": "NLP 知識庫重新載入成功"}
+
+
+@app.post("/admin/setup-rich-menu", tags=["Admin"])
+async def setup_rich_menu():
+    """建立並設定 LINE Rich Menu（圖文選單）。"""
+    try:
+        from app.rich_menu import create_rich_menu, delete_all_rich_menus
+        delete_all_rich_menus()
+        menu_id = create_rich_menu()
+        return {"status": "success", "rich_menu_id": menu_id}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.delete("/admin/rich-menu", tags=["Admin"])
+async def remove_rich_menu():
+    """刪除所有 Rich Menu。"""
+    try:
+        from app.rich_menu import delete_all_rich_menus
+        delete_all_rich_menus()
+        return {"status": "success", "message": "所有 Rich Menu 已刪除"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}

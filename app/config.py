@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # ── 爬蟲 ──────────────────────────────────────────────
     crawler_interval_minutes: int = Field(default=30, env="CRAWLER_INTERVAL_MINUTES")
     nsysu_mis_url: str = Field(
-        default="https://mis.nsysu.edu.tw/news",
+        default="https://web.mis.nsysu.edu.tw/",
         env="NSYSU_MIS_URL",
     )
 
