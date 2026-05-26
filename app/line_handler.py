@@ -231,23 +231,24 @@ _GPA_LINE_RE = re.compile(
 
 def _route_text(text: str, user_id: str, db: Session) -> list:
     lower = text.lower().strip()
+    clean = lower.strip("?？!！。，、～~! ")
 
     # 0. GPA 多行成績輸入偵測（優先判斷）
     lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
     if lines and _GPA_LINE_RE.match(lines[0]):
         return _handle_gpa_calculate(lines)
 
-    # 1. 精確關鍵字路由
+    # 1. 精確關鍵字路由（包含比對）
     for keyword, handler_name in _KEYWORD_ROUTES.items():
         if keyword.lower() in lower:
             handler = globals().get(handler_name)
             if handler:
                 return handler(db=db)
 
-    # 2. 短詞展開
+    # 2. 短詞展開（包含比對，只要訊息中出現關鍵字就展開）
     expanded_text = text
     for keyword, full_question in _KEYWORD_EXPAND.items():
-        if lower.strip("?？!！。，、 ") == keyword:
+        if keyword in clean:
             expanded_text = full_question
             break
 
