@@ -42,3 +42,6 @@ pydantic-settings==2.5.2
 
 # WSGI server (Render 自動偵測需要)
 gunicorn==22.0.0
+
+# Rich Menu 圖片生成
+Pillow==10.3.0
