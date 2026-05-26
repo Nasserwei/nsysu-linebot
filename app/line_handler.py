@@ -393,7 +393,7 @@ def _route_text(text: str, user_id: str, db: Session) -> list:
         return [build_course_carousel()]
     if any(k in lower for k in ["公告", "最新公告", "系所公告"]):
         return _handle_latest_announcements(db=db)
-    if any(k in lower for k in ["天氣", "氣溫", "下雨", "會不會下雨"]):
+    if any(k in lower for k in ["天氣", "氣溫", "下雨", "會不會下雨", "高雄天氣", "今天天氣"]):
         return _handle_weather()
     if any(k in lower for k in ["gpa", "成績計算"]):
         return [build_gpa_flex()]
